@@ -31,7 +31,8 @@ import {
   Filter,
   Download,
   Trash2,
-  MoreHorizontal
+  MoreHorizontal,
+  UserCircle
 } from "lucide-react";
 
 // --- Types ---
@@ -95,6 +96,12 @@ interface AddressResult {
   zip: string;
 }
 
+interface UserProfile {
+  name: string;
+  role: string;
+  initials: string;
+}
+
 // --- Default Data / Seeding ---
 
 const DEFAULT_COSTS: CostItem[] = [
@@ -127,6 +134,12 @@ const initialDraft: ProjectDraft = {
   drawings: [],
   specs: [],
   description: ""
+};
+
+const DEFAULT_USER: UserProfile = {
+  name: "Guest Estimator",
+  role: "General Contractor",
+  initials: "GE"
 };
 
 // --- Shared Components ---
@@ -317,6 +330,26 @@ const AddressAutocomplete = ({
           </ul>
         )}
       </div>
+    </div>
+  );
+};
+
+// --- Logo Component ---
+
+const Logo = () => {
+  const [error, setError] = useState(false);
+  return (
+    <div className="bg-white p-2 rounded-sm transform -rotate-1 shadow-lg border-2 border-yellow-500 hidden md:block group-hover:rotate-0 transition-transform duration-300">
+      {!error ? (
+        <img 
+          src="./logo.png" 
+          alt="American Iron Logo" 
+          className="h-16 w-auto object-contain" 
+          onError={() => setError(true)} 
+        />
+      ) : (
+        <Tractor className="h-16 w-16 text-black" />
+      )}
     </div>
   );
 };
@@ -759,10 +792,19 @@ const App = () => {
     return saved ? JSON.parse(saved) : [];
   });
 
+  const [userProfile, setUserProfile] = useState<UserProfile>(() => {
+      const saved = localStorage.getItem('ai_user_profile');
+      return saved ? JSON.parse(saved) : DEFAULT_USER;
+  });
+
+  const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
+  const [editingProfile, setEditingProfile] = useState<UserProfile>(userProfile);
+
   // Effects to Save State
   useEffect(() => { localStorage.setItem('ai_projects', JSON.stringify(projects)); }, [projects]);
   useEffect(() => { localStorage.setItem('ai_costs', JSON.stringify(costs)); }, [costs]);
   useEffect(() => { localStorage.setItem('ai_vendors', JSON.stringify(vendors)); }, [vendors]);
+  useEffect(() => { localStorage.setItem('ai_user_profile', JSON.stringify(userProfile)); }, [userProfile]);
 
   // Handlers
   const handleSaveProject = (draft: ProjectDraft) => {
@@ -795,6 +837,17 @@ const App = () => {
       setVendors(vendors.filter(v => v.id !== id));
   };
 
+  const handleSaveProfile = () => {
+      const initials = editingProfile.name.split(' ').map(n => n[0]).join('').substring(0, 2).toUpperCase();
+      setUserProfile({ ...editingProfile, initials });
+      setIsProfileModalOpen(false);
+  };
+
+  const openProfileModal = () => {
+      setEditingProfile(userProfile);
+      setIsProfileModalOpen(true);
+  };
+
   return (
     <div className="min-h-screen bg-zinc-100 font-sans text-zinc-900">
       <header className="bg-black border-b-8 border-yellow-500 sticky top-0 z-30 shadow-2xl">
@@ -802,10 +855,7 @@ const App = () => {
           <div className="flex justify-between h-28">
             <div className="flex items-center">
               <div className="flex-shrink-0 flex items-center gap-4 cursor-pointer group" onClick={() => setView('dashboard')}>
-                 <div className="bg-white p-2 rounded-sm transform -rotate-1 shadow-lg border-2 border-yellow-500 hidden md:block group-hover:rotate-0 transition-transform duration-300">
-                    <img src="./logo.png" alt="American Iron Logo" className="h-16 w-auto object-contain" onError={(e) => e.currentTarget.style.display = 'none'} />
-                     <Tractor className="h-16 w-16 text-black hidden" onError={(e) => { const img = e.currentTarget.previousElementSibling as HTMLImageElement; if (img.style.display === 'none') e.currentTarget.classList.remove('hidden'); }} />
-                 </div>
+                 <Logo />
                  <div className="flex flex-col items-start leading-none select-none">
                     <div className="flex items-center"><span className="text-yellow-500 text-3xl md:text-4xl font-black tracking-tighter uppercase font-display transform scale-y-90 drop-shadow-md group-hover:text-white transition-colors">American</span></div>
                     <span className="text-white text-5xl md:text-6xl font-black tracking-tighter uppercase font-display -mt-2 transform scale-y-110 drop-shadow-lg group-hover:text-yellow-500 transition-colors">Iron</span>
@@ -819,10 +869,18 @@ const App = () => {
             </div>
             <div className="flex items-center">
               <button className="p-2 rounded-full text-zinc-400 hover:text-yellow-500 transition-colors mr-4"><span className="sr-only">Notifications</span><AlertCircle className="w-8 h-8" /></button>
-              <div className="relative flex items-center bg-zinc-900 p-2 rounded-full pr-6 border border-zinc-800">
-                <div className="h-10 w-10 rounded-full bg-yellow-500 flex items-center justify-center text-black font-black text-sm border-2 border-white">JD</div>
-                <div className="ml-3 hidden md:block"><p className="text-sm font-bold text-white uppercase tracking-wide font-display">John Doe</p><p className="text-[10px] text-zinc-400 font-mono uppercase">Senior Estimator</p></div>
+              
+              <div 
+                onClick={openProfileModal}
+                className="relative flex items-center bg-zinc-900 p-2 rounded-full pr-6 border border-zinc-800 cursor-pointer hover:bg-zinc-800 transition-colors group"
+              >
+                <div className="h-10 w-10 rounded-full bg-yellow-500 flex items-center justify-center text-black font-black text-sm border-2 border-white group-hover:border-yellow-200">{userProfile.initials}</div>
+                <div className="ml-3 hidden md:block">
+                    <p className="text-sm font-bold text-white uppercase tracking-wide font-display">{userProfile.name}</p>
+                    <p className="text-[10px] text-zinc-400 font-mono uppercase">{userProfile.role}</p>
+                </div>
               </div>
+
             </div>
           </div>
         </div>
@@ -834,6 +892,20 @@ const App = () => {
         {view === 'cost-db' && <CostDatabase costs={costs} onAddCost={handleAddCost} onDeleteCost={handleDeleteCost} />}
         {view === 'vendors' && <VendorManager vendors={vendors} onAddVendor={handleAddVendor} onDeleteVendor={handleDeleteVendor} />}
       </main>
+
+      <Modal isOpen={isProfileModalOpen} onClose={() => setIsProfileModalOpen(false)} title="Edit Profile">
+          <div className="flex flex-col items-center mb-6">
+              <div className="h-20 w-20 rounded-full bg-yellow-500 flex items-center justify-center text-black font-black text-2xl border-4 border-zinc-100 shadow-md mb-4">{editingProfile.name.split(' ').map(n => n[0]).join('').substring(0, 2).toUpperCase()}</div>
+              <p className="text-zinc-500 text-sm">Update your personal details below.</p>
+          </div>
+          <InputField label="Full Name" value={editingProfile.name} onChange={(v: string) => setEditingProfile({...editingProfile, name: v})} placeholder="Jane Doe" required icon={UserCircle} />
+          <InputField label="Job Title / Role" value={editingProfile.role} onChange={(v: string) => setEditingProfile({...editingProfile, role: v})} placeholder="Senior Estimator" required icon={Briefcase} />
+          
+          <div className="flex justify-end gap-3 mt-8">
+             <button onClick={() => setIsProfileModalOpen(false)} className="px-4 py-2 text-zinc-600 font-bold uppercase hover:bg-zinc-100 rounded-sm">Cancel</button>
+             <button onClick={handleSaveProfile} className="px-6 py-2 bg-yellow-500 text-black font-black uppercase rounded-sm border-b-4 border-yellow-600 hover:bg-yellow-400 active:border-b-0 active:translate-y-1 transition-all">Save Profile</button>
+         </div>
+      </Modal>
     </div>
   );
 };
