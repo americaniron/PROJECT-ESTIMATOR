@@ -32,14 +32,77 @@ import {
   Download,
   Trash2,
   MoreHorizontal,
-  UserCircle
+  UserCircle,
+  Sparkles,
+  Mic,
+  MicOff,
+  Image as ImageIcon,
+  Volume2,
+  Send,
+  Globe,
+  Zap,
+  Bot,
+  Factory,
+  Stethoscope,
+  CheckSquare
 } from "lucide-react";
+import { GoogleGenAI } from "@google/genai";
+
+// --- Helpers for Audio ---
+
+function decode(base64: string) {
+  const binaryString = atob(base64);
+  const len = binaryString.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) {
+    bytes[i] = binaryString.charCodeAt(i);
+  }
+  return bytes;
+}
+
+async function decodeAudioData(
+  data: Uint8Array,
+  ctx: AudioContext,
+  sampleRate: number,
+  numChannels: number,
+): Promise<AudioBuffer> {
+  const dataInt16 = new Int16Array(data.buffer);
+  const frameCount = dataInt16.length / numChannels;
+  const buffer = ctx.createBuffer(numChannels, frameCount, sampleRate);
+
+  for (let channel = 0; channel < numChannels; channel++) {
+    const channelData = buffer.getChannelData(channel);
+    for (let i = 0; i < frameCount; i++) {
+      channelData[i] = dataInt16[i * numChannels + channel] / 32768.0;
+    }
+  }
+  return buffer;
+}
+
+function blobToBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      const base64data = reader.result as string;
+      // Remove data url prefix if present
+      resolve(base64data.split(',')[1]); 
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+}
 
 // --- Types ---
 
 type ProjectType = 'Residential' | 'Commercial' | 'Industrial' | 'Civil' | 'Healthcare' | 'Education' | 'Other';
 type DeliveryMethod = 'Design-Bid-Build' | 'Design-Build' | 'CM at Risk' | 'IPD' | 'Other';
 type ContractType = 'Lump Sum' | 'GMP' | 'Cost Plus' | 'Unit Price' | 'T&M';
+
+interface ScopeItem {
+  id: string;
+  name: string;
+  included: boolean;
+}
 
 interface ProjectDraft {
   name: string;
@@ -60,6 +123,8 @@ interface ProjectDraft {
   drawings: string[];
   specs: string[];
   description: string;
+  scopeChecklist: ScopeItem[];
+  suggestedAssemblies: string[];
 }
 
 interface Project extends ProjectDraft {
@@ -102,6 +167,26 @@ interface UserProfile {
   initials: string;
 }
 
+interface ChatMessage {
+    id: string;
+    role: 'user' | 'model';
+    text: string;
+    image?: string;
+    groundingMetadata?: any;
+}
+
+interface ProjectTemplate {
+  label: string;
+  type: ProjectType;
+  icon: any;
+  description: string;
+  scopeChecklist: string[];
+  assemblies: string[];
+  specs: string[];
+  defaultDeliveryMethod?: DeliveryMethod;
+  defaultContractType?: ContractType;
+}
+
 // --- Default Data / Seeding ---
 
 const DEFAULT_COSTS: CostItem[] = [
@@ -113,6 +198,86 @@ const DEFAULT_COSTS: CostItem[] = [
   { id: '6', code: "22-11-13", item: "Copper Piping 3/4 inch", unit: "LF", material: 8.40, labor: 12.50, equipment: 1.10, total: 22.00 },
   { id: '7', code: "26-05-19", item: "12/2 MC Cable", unit: "LF", material: 1.25, labor: 2.80, equipment: 0.15, total: 4.20 },
   { id: '8', code: "31-23-00", item: "Excavation - Common Earth", unit: "CY", material: 0.00, labor: 4.50, equipment: 8.50, total: 13.00 },
+];
+
+const PROJECT_TEMPLATES: ProjectTemplate[] = [
+  {
+    label: "Residential",
+    type: "Residential",
+    icon: Home,
+    description: "Single family, multi-family, and residential renovations.",
+    scopeChecklist: [
+      "Site Preparation & Clearing", "Foundation (Slab/Basement)", "Framing (Wood/Light Gauge)", 
+      "Roofing & Siding", "Windows & Doors", "Plumbing Rough & Trim", "HVAC Systems", 
+      "Electrical Rough & Trim", "Insulation & Drywall", "Kitchen & Bath Cabinetry", 
+      "Flooring & Finishes", "Landscaping & Hardscaping"
+    ],
+    assemblies: ["Ext Wall 2x6 w/ Vinyl Siding", "Asphalt Shingle Roof System", "Res. Kitchen Assembly"],
+    specs: ["06-10-00 Rough Carpentry", "07-31-13 Asphalt Shingles", "09-29-00 Gypsum Board", "12-36-00 Countertops"],
+    defaultDeliveryMethod: "Design-Bid-Build",
+    defaultContractType: "Lump Sum"
+  },
+  {
+    label: "Commercial",
+    type: "Commercial",
+    icon: Building,
+    description: "Office buildings, retail spaces, and mixed-use developments.",
+    scopeChecklist: [
+      "Site Utilities & Grading", "Concrete Foundations & Core", "Structural Steel Framing",
+      "Exterior Curtain Wall/Glazing", "Roofing (TPO/EPDM)", "Fire Sprinkler System",
+      "Elevators & Conveyance", "HVAC (RTU/Chiller)", "Electrical Distribution",
+      "Metal Stud Partitioning", "Acoustical Ceilings", "Commercial Flooring"
+    ],
+    assemblies: ["Steel Column/Beam Grid", "Curtain Wall System", "Metal Stud Partition 3-5/8", "Suspended Ceiling Grid"],
+    specs: ["03-30-00 Cast-in-Place Concrete", "05-12-00 Structural Steel", "08-44-00 Curtain Wall", "09-51-00 Acoustical Ceilings"],
+    defaultDeliveryMethod: "CM at Risk",
+    defaultContractType: "GMP"
+  },
+  {
+    label: "Industrial",
+    type: "Industrial",
+    icon: Factory,
+    description: "Warehouses, manufacturing plants, and distribution centers.",
+    scopeChecklist: [
+      "Heavy Earthwork & Grading", "Reinforced Concrete Slabs", "Pre-Engineered Metal Building (PEMB)",
+      "Loading Docks & Levelers", "Heavy Electrical Service", "Process Piping",
+      "Industrial Ventilation", "Overhead Cranes", "Security Fencing", "High-Bay Lighting"
+    ],
+    assemblies: ["Heavy Duty Slab on Grade", "PEMB Structure", "Loading Dock Equip"],
+    specs: ["03-30-53 Misc Cast-in-Place Concrete", "13-34-19 Metal Building Systems", "26-51-13 Interior Lighting"],
+    defaultDeliveryMethod: "Design-Build",
+    defaultContractType: "Lump Sum"
+  },
+  {
+    label: "Civil / Infrastructure",
+    type: "Civil",
+    icon: Tractor,
+    description: "Roads, bridges, utilities, and public works.",
+    scopeChecklist: [
+      "Clearing & Grubbing", "Mass Excavation", "Storm Drainage Systems",
+      "Sanitary Sewer", "Water Main Distribution", "Asphalt Paving",
+      "Concrete Curb & Gutter", "Retaining Walls", "Traffic Signals & Signage", "Erosion Control"
+    ],
+    assemblies: ["Asphalt Paving Section", "Concrete Curb Type A", "Storm Manhole 48in"],
+    specs: ["31-23-00 Excavation", "32-12-16 Asphalt Paving", "33-40-00 Storm Drainage"],
+    defaultDeliveryMethod: "Design-Bid-Build",
+    defaultContractType: "Unit Price"
+  },
+  {
+    label: "Healthcare / MEP",
+    type: "Healthcare",
+    icon: Stethoscope,
+    description: "Hospitals, clinics, labs, and system-heavy projects.",
+    scopeChecklist: [
+      "Infection Control (ICRA)", "Medical Gas Systems", "Nurse Call Systems",
+      "Emergency Power (Generators)", "Specialized HVAC (HEPA)", "Lead Lining/Shielding",
+      "Hospital Grade Flooring", "Clean Room Partitions", "Fire Alarm & Suppression", "Commissioning"
+    ],
+    assemblies: ["Med Gas Wall Outlet", "Clean Room Partition", "Generator Backup System"],
+    specs: ["22-60-00 Gas and Vacuum Systems", "26-32-13 Engine Generators", "09-65-16 Resilient Sheet Flooring"],
+    defaultDeliveryMethod: "CM at Risk",
+    defaultContractType: "GMP"
+  }
 ];
 
 const initialDraft: ProjectDraft = {
@@ -133,7 +298,9 @@ const initialDraft: ProjectDraft = {
   endDate: "",
   drawings: [],
   specs: [],
-  description: ""
+  description: "",
+  scopeChecklist: [],
+  suggestedAssemblies: []
 };
 
 const DEFAULT_USER: UserProfile = {
@@ -354,6 +521,335 @@ const Logo = () => {
   );
 };
 
+// --- AI Assistant Component ---
+
+const AIAssistant = ({ onClose }: { onClose: () => void }) => {
+    const [messages, setMessages] = useState<ChatMessage[]>([]);
+    const [input, setInput] = useState('');
+    const [isLoading, setIsLoading] = useState(false);
+    const [mode, setMode] = useState<'fast' | 'search' | 'image'>('fast');
+    const [imageSize, setImageSize] = useState<'1K' | '2K' | '4K'>('1K');
+    const [isRecording, setIsRecording] = useState(false);
+    const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+    const messagesEndRef = useRef<HTMLDivElement>(null);
+
+    const scrollToBottom = () => {
+        messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    };
+
+    useEffect(() => {
+        scrollToBottom();
+    }, [messages]);
+
+    const handleSend = async () => {
+        if (!input.trim()) return;
+
+        const newMessage: ChatMessage = {
+            id: Date.now().toString(),
+            role: 'user',
+            text: input
+        };
+        setMessages(prev => [...prev, newMessage]);
+        setInput('');
+        setIsLoading(true);
+
+        try {
+            const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+            let responseText = '';
+            let imageUrl = undefined;
+            let groundingMetadata = undefined;
+
+            if (mode === 'image') {
+                const response = await ai.models.generateContent({
+                    model: 'gemini-3-pro-image-preview',
+                    contents: {
+                        parts: [{ text: newMessage.text }]
+                    },
+                    config: {
+                        imageConfig: {
+                            imageSize: imageSize
+                        }
+                    }
+                });
+
+                // Iterate through parts to find the image
+                for (const part of response.candidates[0].content.parts) {
+                   if (part.inlineData) {
+                       const base64EncodeString = part.inlineData.data;
+                       imageUrl = `data:image/png;base64,${base64EncodeString}`;
+                   } else if (part.text) {
+                       responseText += part.text;
+                   }
+                }
+                if (!responseText) responseText = "Here is the generated image.";
+
+            } else if (mode === 'search') {
+                const response = await ai.models.generateContent({
+                    model: 'gemini-3-flash-preview',
+                    contents: newMessage.text,
+                    config: {
+                        tools: [{ googleSearch: {} }]
+                    }
+                });
+                responseText = response.text || "I found some information.";
+                groundingMetadata = response.candidates?.[0]?.groundingMetadata;
+
+            } else {
+                // Fast mode
+                const response = await ai.models.generateContent({
+                    model: 'gemini-2.5-flash-lite',
+                    contents: newMessage.text
+                });
+                responseText = response.text || "Response generated.";
+            }
+
+            const botMessage: ChatMessage = {
+                id: (Date.now() + 1).toString(),
+                role: 'model',
+                text: responseText,
+                image: imageUrl,
+                groundingMetadata: groundingMetadata
+            };
+            setMessages(prev => [...prev, botMessage]);
+
+        } catch (error) {
+            console.error("AI Error:", error);
+            const errorMessage: ChatMessage = {
+                id: (Date.now() + 1).toString(),
+                role: 'model',
+                text: "Sorry, I encountered an error processing your request."
+            };
+            setMessages(prev => [...prev, errorMessage]);
+        } finally {
+            setIsLoading(false);
+        }
+    };
+
+    const toggleRecording = async () => {
+        if (isRecording) {
+            mediaRecorderRef.current?.stop();
+            setIsRecording(false);
+        } else {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                const mediaRecorder = new MediaRecorder(stream);
+                mediaRecorderRef.current = mediaRecorder;
+                const audioChunks: Blob[] = [];
+
+                mediaRecorder.ondataavailable = (event) => {
+                    audioChunks.push(event.data);
+                };
+
+                mediaRecorder.onstop = async () => {
+                    setIsLoading(true);
+                    const audioBlob = new Blob(audioChunks, { type: 'audio/wav' });
+                    const base64Audio = await blobToBase64(audioBlob);
+
+                    try {
+                        const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+                        const response = await ai.models.generateContent({
+                            model: 'gemini-3-flash-preview',
+                            contents: {
+                                parts: [
+                                    {
+                                        inlineData: {
+                                            mimeType: 'audio/wav',
+                                            data: base64Audio
+                                        }
+                                    },
+                                    { text: "Please transcribe this audio exactly as spoken." }
+                                ]
+                            }
+                        });
+                        setInput(response.text || "");
+                    } catch (e) {
+                        console.error("Transcription error", e);
+                        alert("Failed to transcribe audio.");
+                    } finally {
+                        setIsLoading(false);
+                    }
+                    stream.getTracks().forEach(track => track.stop());
+                };
+
+                mediaRecorder.start();
+                setIsRecording(true);
+            } catch (err) {
+                console.error("Error accessing microphone:", err);
+                alert("Could not access microphone. Please check permissions.");
+            }
+        }
+    };
+
+    const playTTS = async (text: string) => {
+        try {
+            const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+            const response = await ai.models.generateContent({
+                model: "gemini-2.5-flash-preview-tts",
+                contents: [{ parts: [{ text: text }] }],
+                config: {
+                    responseModalities: ['AUDIO'],
+                    speechConfig: {
+                        voiceConfig: {
+                            prebuiltVoiceConfig: { voiceName: 'Kore' },
+                        },
+                    },
+                },
+            });
+
+            const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+            if (base64Audio) {
+                 const outputAudioContext = new (window.AudioContext || (window as any).webkitAudioContext)({sampleRate: 24000});
+                 const audioBuffer = await decodeAudioData(
+                    decode(base64Audio),
+                    outputAudioContext,
+                    24000,
+                    1
+                 );
+                 const source = outputAudioContext.createBufferSource();
+                 source.buffer = audioBuffer;
+                 source.connect(outputAudioContext.destination);
+                 source.start();
+            }
+
+        } catch (e) {
+            console.error("TTS Error", e);
+            alert("Failed to generate speech.");
+        }
+    };
+
+    return (
+        <div className="fixed inset-y-0 right-0 w-full md:w-[450px] bg-zinc-50 shadow-2xl z-50 flex flex-col border-l-4 border-yellow-500 animate-fadeIn">
+            <div className="bg-black text-white p-4 flex justify-between items-center border-b border-zinc-800">
+                <div className="flex items-center gap-2">
+                    <Sparkles className="w-5 h-5 text-yellow-500" />
+                    <h2 className="font-display text-xl font-bold uppercase tracking-wide">AI Assistant</h2>
+                </div>
+                <button onClick={onClose} className="text-zinc-400 hover:text-white transition-colors">
+                    <X className="w-6 h-6" />
+                </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-zinc-100">
+                {messages.length === 0 && (
+                     <div className="text-center text-zinc-400 mt-20">
+                        <Bot className="w-12 h-12 mx-auto mb-3 opacity-20" />
+                        <p className="text-sm font-medium">How can I help you today?</p>
+                     </div>
+                )}
+                {messages.map((msg) => (
+                    <div key={msg.id} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                        <div className={`max-w-[85%] rounded-sm p-3 shadow-sm ${msg.role === 'user' ? 'bg-yellow-500 text-black border-b-2 border-yellow-600' : 'bg-white text-zinc-800 border-b-2 border-zinc-200'}`}>
+                            {msg.image && (
+                                <img src={msg.image} alt="Generated" className="w-full h-auto rounded-sm mb-2 border border-zinc-200" />
+                            )}
+                            <p className="text-sm whitespace-pre-wrap">{msg.text}</p>
+                            
+                            {/* Grounding Sources */}
+                            {msg.groundingMetadata?.groundingChunks && (
+                                <div className="mt-3 pt-2 border-t border-zinc-100">
+                                    <p className="text-[10px] font-bold uppercase text-zinc-400 mb-1">Sources:</p>
+                                    <div className="flex flex-wrap gap-2">
+                                        {msg.groundingMetadata.groundingChunks.map((chunk: any, i: number) => 
+                                            chunk.web?.uri ? (
+                                                <a key={i} href={chunk.web.uri} target="_blank" rel="noreferrer" className="text-[10px] bg-zinc-100 hover:bg-zinc-200 text-blue-600 px-2 py-1 rounded-sm truncate max-w-full flex items-center">
+                                                    <Globe className="w-3 h-3 mr-1" /> {chunk.web.title || "Source"}
+                                                </a>
+                                            ) : null
+                                        )}
+                                    </div>
+                                </div>
+                            )}
+
+                            {msg.role === 'model' && (
+                                <button onClick={() => playTTS(msg.text)} className="mt-2 text-zinc-400 hover:text-yellow-600 transition-colors" title="Read Aloud">
+                                    <Volume2 className="w-4 h-4" />
+                                </button>
+                            )}
+                        </div>
+                    </div>
+                ))}
+                {isLoading && (
+                    <div className="flex justify-start">
+                         <div className="bg-white p-3 rounded-sm shadow-sm border-b-2 border-zinc-200">
+                             <Loader2 className="w-5 h-5 text-yellow-500 animate-spin" />
+                         </div>
+                    </div>
+                )}
+                <div ref={messagesEndRef} />
+            </div>
+
+            <div className="bg-white p-4 border-t border-zinc-200">
+                <div className="flex gap-2 mb-3 overflow-x-auto pb-1 scrollbar-hide">
+                    <button 
+                        onClick={() => setMode('fast')}
+                        className={`px-3 py-1.5 rounded-sm text-xs font-bold uppercase flex items-center whitespace-nowrap transition-colors ${mode === 'fast' ? 'bg-zinc-900 text-yellow-500' : 'bg-zinc-100 text-zinc-500 hover:bg-zinc-200'}`}
+                    >
+                        <Zap className="w-3 h-3 mr-1.5" /> Fast AI
+                    </button>
+                    <button 
+                        onClick={() => setMode('search')}
+                        className={`px-3 py-1.5 rounded-sm text-xs font-bold uppercase flex items-center whitespace-nowrap transition-colors ${mode === 'search' ? 'bg-zinc-900 text-yellow-500' : 'bg-zinc-100 text-zinc-500 hover:bg-zinc-200'}`}
+                    >
+                        <Search className="w-3 h-3 mr-1.5" /> Smart Search
+                    </button>
+                    <button 
+                        onClick={() => setMode('image')}
+                        className={`px-3 py-1.5 rounded-sm text-xs font-bold uppercase flex items-center whitespace-nowrap transition-colors ${mode === 'image' ? 'bg-zinc-900 text-yellow-500' : 'bg-zinc-100 text-zinc-500 hover:bg-zinc-200'}`}
+                    >
+                        <ImageIcon className="w-3 h-3 mr-1.5" /> Generate Image
+                    </button>
+                </div>
+
+                {mode === 'image' && (
+                    <div className="mb-3">
+                         <label className="text-[10px] font-bold uppercase text-zinc-400 block mb-1">Image Size</label>
+                         <select 
+                            value={imageSize} 
+                            onChange={(e) => setImageSize(e.target.value as any)}
+                            className="w-full text-xs border border-zinc-300 rounded-sm p-1.5 bg-zinc-50"
+                         >
+                             <option value="1K">1K (Square)</option>
+                             <option value="2K">2K (High Res)</option>
+                             <option value="4K">4K (Ultra Res)</option>
+                         </select>
+                    </div>
+                )}
+
+                <div className="relative">
+                    <textarea 
+                        value={input}
+                        onChange={(e) => setInput(e.target.value)}
+                        onKeyDown={(e) => { if(e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
+                        placeholder={mode === 'image' ? "Describe the image you want..." : "Ask me anything..."}
+                        className="w-full border border-zinc-300 rounded-sm pl-3 pr-12 py-3 text-sm focus:ring-2 focus:ring-yellow-500 focus:border-transparent resize-none h-14 bg-zinc-50"
+                    />
+                    <div className="absolute right-2 top-2 flex items-center gap-1">
+                        <button 
+                            onClick={toggleRecording}
+                            className={`p-2 rounded-full transition-colors ${isRecording ? 'text-red-500 bg-red-50 animate-pulse' : 'text-zinc-400 hover:text-black hover:bg-zinc-200'}`}
+                            title="Voice Input"
+                        >
+                            {isRecording ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
+                        </button>
+                        <button 
+                            onClick={handleSend}
+                            disabled={!input.trim() || isLoading}
+                            className="p-2 rounded-full text-yellow-600 hover:text-black hover:bg-yellow-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                        >
+                            <Send className="w-4 h-4" />
+                        </button>
+                    </div>
+                </div>
+                <div className="text-[10px] text-center mt-2 text-zinc-400">
+                    {mode === 'fast' && "Using Gemini 2.5 Flash Lite"}
+                    {mode === 'search' && "Using Gemini 3 Flash Preview + Google Search"}
+                    {mode === 'image' && "Using Gemini 3 Pro Image Preview"}
+                </div>
+            </div>
+        </div>
+    );
+};
+
 // --- Wizard Components ---
 
 const StepIndicator = ({ currentStep, steps }: { currentStep: number, steps: string[] }) => (
@@ -420,7 +916,40 @@ const ProjectWizard = ({ onCancel, onSave }: { onCancel: () => void, onSave: (pr
     }));
   };
 
-  const steps = ["General Info", "Scope", "Strategy", "Schedule", "Docs", "Review"];
+  const applyTemplate = (template: ProjectTemplate) => {
+    setData(prev => ({
+      ...prev,
+      type: template.type,
+      description: template.description,
+      specs: template.specs,
+      scopeChecklist: template.scopeChecklist.map((item, idx) => ({ id: `sc-${idx}`, name: item, included: true })),
+      suggestedAssemblies: template.assemblies,
+      deliveryMethod: template.defaultDeliveryMethod || prev.deliveryMethod,
+      contractType: template.defaultContractType || prev.contractType
+    }));
+    handleNext();
+  };
+
+  const toggleScopeItem = (id: string) => {
+    setData(prev => ({
+      ...prev,
+      scopeChecklist: prev.scopeChecklist.map(item => 
+        item.id === id ? { ...item, included: !item.included } : item
+      )
+    }));
+  };
+
+  const addScopeItem = () => {
+    const newItemName = prompt("Enter new scope item name:");
+    if (newItemName) {
+      setData(prev => ({
+        ...prev,
+        scopeChecklist: [...prev.scopeChecklist, { id: `sc-${Date.now()}`, name: newItemName, included: true }]
+      }));
+    }
+  };
+
+  const steps = ["Template", "General", "Scope", "Strategy", "Schedule", "Docs", "Review"];
 
   const handleNext = () => { if (step < steps.length - 1) setStep(step + 1); };
   const handleBack = () => { if (step > 0) setStep(step - 1); };
@@ -431,7 +960,44 @@ const ProjectWizard = ({ onCancel, onSave }: { onCancel: () => void, onSave: (pr
 
   const renderStepContent = () => {
     switch (step) {
-      case 0:
+      case 0: // Template Selection
+        return (
+          <div className="space-y-6 animate-fadeIn">
+            <h3 className="text-xl font-bold font-display text-zinc-900 uppercase mb-4">Select Project Template</h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {PROJECT_TEMPLATES.map((template) => {
+                 const Icon = template.icon;
+                 return (
+                  <button 
+                    key={template.label}
+                    onClick={() => applyTemplate(template)}
+                    className="flex flex-col items-start p-6 bg-white border-2 border-zinc-200 rounded-sm hover:border-yellow-500 hover:bg-yellow-50 transition-all text-left group h-full"
+                  >
+                    <div className="p-3 bg-zinc-100 rounded-full mb-4 group-hover:bg-yellow-500 group-hover:text-black transition-colors">
+                      <Icon className="w-8 h-8 text-zinc-600 group-hover:text-black" />
+                    </div>
+                    <h4 className="text-lg font-black font-display uppercase text-zinc-900 mb-2">{template.label}</h4>
+                    <p className="text-sm text-zinc-500 mb-4 flex-grow">{template.description}</p>
+                    <span className="text-xs font-bold text-yellow-600 uppercase tracking-wide flex items-center mt-auto">
+                      Use Template <ArrowRight className="w-3 h-3 ml-1 group-hover:translate-x-1 transition-transform" />
+                    </span>
+                  </button>
+                 );
+              })}
+              <button 
+                onClick={() => {
+                  setData(initialDraft);
+                  handleNext();
+                }}
+                className="flex flex-col items-center justify-center p-6 bg-zinc-50 border-2 border-dashed border-zinc-300 rounded-sm hover:border-zinc-400 hover:bg-zinc-100 transition-all text-center group h-full"
+              >
+                 <Plus className="w-10 h-10 text-zinc-300 mb-2 group-hover:text-zinc-500" />
+                 <h4 className="text-lg font-bold font-display uppercase text-zinc-400 group-hover:text-zinc-600">Blank Project</h4>
+              </button>
+            </div>
+          </div>
+        );
+      case 1: // General
         return (
           <div className="space-y-4 animate-fadeIn">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -452,9 +1018,9 @@ const ProjectWizard = ({ onCancel, onSave }: { onCancel: () => void, onSave: (pr
             </div>
           </div>
         );
-      case 1:
+      case 2: // Scope
         return (
-          <div className="space-y-4 animate-fadeIn">
+          <div className="space-y-6 animate-fadeIn">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <SelectField label="Project Type / Sector" value={data.type} onChange={(v: any) => updateField('type', v)} options={['Residential', 'Commercial', 'Industrial', 'Civil', 'Healthcare', 'Education', 'Other']} required icon={LayoutTemplate} />
               <div className="flex gap-2">
@@ -462,10 +1028,50 @@ const ProjectWizard = ({ onCancel, onSave }: { onCancel: () => void, onSave: (pr
                 <div className="w-1/3"><SelectField label="Unit" value={data.sizeUnit} onChange={(v: any) => updateField('sizeUnit', v)} options={['SF', 'm2']} /></div>
               </div>
             </div>
-            <TextAreaField label="Project Description / Scope Summary" value={data.description} onChange={(v: string) => updateField('description', v)} placeholder="Describe the scope of work..." rows={6} />
+            <TextAreaField label="Project Description / Scope Summary" value={data.description} onChange={(v: string) => updateField('description', v)} placeholder="Describe the scope of work..." rows={4} />
+            
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+               <div className="bg-zinc-50 p-4 rounded-sm border border-zinc-200">
+                  <div className="flex justify-between items-center mb-3">
+                    <h4 className="text-sm font-bold text-zinc-900 uppercase tracking-wide font-display flex items-center">
+                       <CheckSquare className="w-4 h-4 mr-2 text-yellow-500" /> Scope Checklist
+                    </h4>
+                    <button onClick={addScopeItem} className="text-xs text-blue-600 hover:text-blue-800 font-bold uppercase">+ Add Item</button>
+                  </div>
+                  <div className="max-h-60 overflow-y-auto space-y-2 pr-2">
+                    {data.scopeChecklist.length === 0 && <p className="text-xs text-zinc-400 italic">No scope items. Select a template to populate.</p>}
+                    {data.scopeChecklist.map((item) => (
+                      <div key={item.id} className="flex items-start gap-2 p-2 bg-white border border-zinc-100 rounded-sm hover:border-zinc-300 transition-colors">
+                        <input 
+                           type="checkbox" 
+                           checked={item.included} 
+                           onChange={() => toggleScopeItem(item.id)}
+                           className="mt-1 h-4 w-4 text-yellow-600 focus:ring-yellow-500 border-gray-300 rounded"
+                        />
+                        <span className={`text-sm ${item.included ? 'text-zinc-800' : 'text-zinc-400 line-through'}`}>{item.name}</span>
+                      </div>
+                    ))}
+                  </div>
+               </div>
+               
+               <div className="bg-zinc-50 p-4 rounded-sm border border-zinc-200">
+                  <h4 className="text-sm font-bold text-zinc-900 uppercase tracking-wide font-display mb-3 flex items-center">
+                     <Hammer className="w-4 h-4 mr-2 text-yellow-500" /> Proposed Assemblies
+                  </h4>
+                  <div className="space-y-2">
+                     <textarea 
+                        className="w-full h-32 text-sm border-zinc-300 rounded-sm p-2" 
+                        value={data.suggestedAssemblies.join('\n')} 
+                        onChange={(e) => updateField('suggestedAssemblies', e.target.value.split('\n'))}
+                        placeholder="List major assemblies (one per line)..."
+                     />
+                     <p className="text-[10px] text-zinc-500">Edit list of major construction assemblies for this project type.</p>
+                  </div>
+               </div>
+            </div>
           </div>
         );
-      case 2:
+      case 3: // Strategy
         return (
           <div className="space-y-4 animate-fadeIn">
              <div className="bg-yellow-50 border border-yellow-200 p-4 rounded-sm flex items-start mb-4">
@@ -479,7 +1085,7 @@ const ProjectWizard = ({ onCancel, onSave }: { onCancel: () => void, onSave: (pr
             <InputField label="Target Budget" value={data.targetBudget} onChange={(v: string) => updateField('targetBudget', v)} placeholder="e.g. 1,500,000" icon={DollarSign} />
           </div>
         );
-      case 3:
+      case 4: // Schedule
         return (
           <div className="space-y-4 animate-fadeIn">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -491,14 +1097,14 @@ const ProjectWizard = ({ onCancel, onSave }: { onCancel: () => void, onSave: (pr
             )}
           </div>
         );
-      case 4:
+      case 5: // Docs
         return (
           <div className="space-y-6 animate-fadeIn">
              <div><div className="flex justify-between items-center mb-2"><label className="block text-sm font-bold text-zinc-800 uppercase tracking-wide font-display">Drawings List</label><span className="text-xs text-zinc-500">One per line</span></div><textarea className="block w-full rounded-sm border-zinc-300 border bg-white py-2 px-3 text-zinc-900 placeholder:text-zinc-400 focus:ring-2 focus:ring-yellow-500 focus:border-transparent sm:text-sm shadow-sm font-mono text-xs" rows={6} value={data.drawings.join('\n')} onChange={(e) => updateField('drawings', e.target.value.split('\n'))} placeholder="A-000 Cover Sheet&#10;A-101 Floor Plan" /></div>
              <div><div className="flex justify-between items-center mb-2"><label className="block text-sm font-bold text-zinc-800 uppercase tracking-wide font-display">Specifications / Clarifications</label><span className="text-xs text-zinc-500">One per line</span></div><textarea className="block w-full rounded-sm border-zinc-300 border bg-white py-2 px-3 text-zinc-900 placeholder:text-zinc-400 focus:ring-2 focus:ring-yellow-500 focus:border-transparent sm:text-sm shadow-sm font-mono text-xs" rows={6} value={data.specs.join('\n')} onChange={(e) => updateField('specs', e.target.value.split('\n'))} placeholder="03 30 00 - Cast-in-Place Concrete" /></div>
           </div>
         );
-      case 5:
+      case 6: // Review
         return (
           <div className="space-y-6 animate-fadeIn">
             <div className="bg-white p-6 rounded-sm border-2 border-zinc-200">
@@ -511,7 +1117,23 @@ const ProjectWizard = ({ onCancel, onSave }: { onCancel: () => void, onSave: (pr
                   <div><span className="text-zinc-500 block mb-1 text-xs uppercase font-bold font-display">Size</span><span className="font-bold text-zinc-900">{data.size} {data.sizeUnit}</span></div>
                   <div><span className="text-zinc-500 block mb-1 text-xs uppercase font-bold font-display">Contract</span><span className="font-bold text-zinc-900">{data.deliveryMethod} - {data.contractType}</span></div>
                </div>
-               <div className="mt-6 pt-4 border-t border-zinc-200"><span className="text-zinc-500 block mb-2 text-xs uppercase font-bold font-display">Scope Summary</span><p className="text-zinc-800 text-sm whitespace-pre-wrap">{data.description || "No description provided."}</p></div>
+               
+               {/* Scope Review Section */}
+               <div className="mt-6 pt-4 border-t border-zinc-200">
+                 <span className="text-zinc-500 block mb-2 text-xs uppercase font-bold font-display">Scope Summary</span>
+                 <p className="text-zinc-800 text-sm whitespace-pre-wrap mb-3">{data.description || "No description provided."}</p>
+                 
+                 {data.scopeChecklist.length > 0 && (
+                   <div className="mt-2">
+                     <span className="text-zinc-500 block mb-1 text-xs uppercase font-bold font-display">Included Scope Items</span>
+                     <div className="flex flex-wrap gap-1">
+                       {data.scopeChecklist.filter(i => i.included).map(i => (
+                         <span key={i.id} className="text-[10px] bg-zinc-100 text-zinc-700 px-2 py-0.5 rounded-sm border border-zinc-200 font-bold">{i.name}</span>
+                       ))}
+                     </div>
+                   </div>
+                 )}
+               </div>
             </div>
           </div>
         );
@@ -520,7 +1142,7 @@ const ProjectWizard = ({ onCancel, onSave }: { onCancel: () => void, onSave: (pr
   };
 
   return (
-    <div className="max-w-4xl mx-auto py-10 px-4">
+    <div className="max-w-5xl mx-auto py-10 px-4">
       <div className="flex justify-between items-center mb-8">
         <div><h1 className="text-4xl font-black font-display text-zinc-900 uppercase tracking-tighter">Project Setup</h1><p className="text-zinc-500 mt-1 font-medium">Initialize a new estimate workspace</p></div>
         <button onClick={onCancel} className="text-zinc-400 hover:text-black p-2 transition-colors"><X className="w-8 h-8" /></button>
@@ -533,7 +1155,7 @@ const ProjectWizard = ({ onCancel, onSave }: { onCancel: () => void, onSave: (pr
           {step === steps.length - 1 ? (
             <button onClick={handleFinish} className="flex items-center px-8 py-3 bg-yellow-500 text-black rounded-sm text-base font-black uppercase tracking-wide hover:bg-yellow-400 shadow-lg transition-all transform hover:scale-[1.02] border-b-4 border-yellow-600 font-display">Create Project <CheckCircle className="w-5 h-5 ml-2" /></button>
           ) : (
-            <button onClick={handleNext} className="flex items-center px-8 py-3 bg-yellow-500 text-black rounded-sm text-base font-black uppercase tracking-wide hover:bg-yellow-400 shadow-lg transition-all transform hover:scale-[1.02] border-b-4 border-yellow-600 font-display">Next Step <ChevronRight className="w-5 h-5 ml-2" /></button>
+            <button onClick={handleNext} disabled={step === 0 && !data.type} className="flex items-center px-8 py-3 bg-yellow-500 text-black rounded-sm text-base font-black uppercase tracking-wide hover:bg-yellow-400 shadow-lg transition-all transform hover:scale-[1.02] border-b-4 border-yellow-600 font-display disabled:opacity-50 disabled:cursor-not-allowed">Next Step <ChevronRight className="w-5 h-5 ml-2" /></button>
           )}
         </div>
       </div>
@@ -770,6 +1392,7 @@ const Dashboard = ({ projects, onNewProject, onDeleteProject }: { projects: Proj
 
 const App = () => {
   const [view, setView] = useState<'dashboard' | 'wizard' | 'cost-db' | 'vendors'>('dashboard');
+  const [isAIAssistantOpen, setIsAIAssistantOpen] = useState(false);
   
   // Persistent State
   const [projects, setProjects] = useState<Project[]>(() => {
@@ -861,14 +1484,21 @@ const App = () => {
                     <span className="text-white text-5xl md:text-6xl font-black tracking-tighter uppercase font-display -mt-2 transform scale-y-110 drop-shadow-lg group-hover:text-yellow-500 transition-colors">Iron</span>
                  </div>
               </div>
-              <div className="hidden lg:ml-20 lg:flex lg:space-x-8 h-full items-end pb-1">
+              <div className="hidden lg:ml-20 lg:space-x-8 h-full items-end pb-1 lg:flex">
                 <button onClick={(e) => { e.stopPropagation(); setView('dashboard'); }} className={`${(view === 'dashboard' || view === 'wizard') ? 'text-yellow-500 border-yellow-500' : 'text-zinc-500 border-transparent hover:text-white'} inline-flex items-center px-2 py-4 border-b-4 text-lg font-black uppercase tracking-wide transition-all font-display`}>Estimates</button>
                 <button onClick={(e) => { e.stopPropagation(); setView('cost-db'); }} className={`${view === 'cost-db' ? 'text-yellow-500 border-yellow-500' : 'text-zinc-500 border-transparent hover:text-white'} inline-flex items-center px-2 py-4 border-b-4 text-lg font-black uppercase tracking-wide transition-all font-display`}>Cost Database</button>
                 <button onClick={(e) => { e.stopPropagation(); setView('vendors'); }} className={`${view === 'vendors' ? 'text-yellow-500 border-yellow-500' : 'text-zinc-500 border-transparent hover:text-white'} inline-flex items-center px-2 py-4 border-b-4 text-lg font-black uppercase tracking-wide transition-all font-display`}>Vendors</button>
               </div>
             </div>
-            <div className="flex items-center">
-              <button className="p-2 rounded-full text-zinc-400 hover:text-yellow-500 transition-colors mr-4"><span className="sr-only">Notifications</span><AlertCircle className="w-8 h-8" /></button>
+            <div className="flex items-center gap-4">
+              <button 
+                  onClick={() => setIsAIAssistantOpen(true)}
+                  className="bg-yellow-500 text-black px-4 py-2 rounded-full font-bold uppercase text-xs flex items-center hover:bg-yellow-400 transition-colors shadow-md border-2 border-transparent hover:border-white"
+              >
+                  <Sparkles className="w-4 h-4 mr-1" /> AI Assistant
+              </button>
+
+              <button className="p-2 rounded-full text-zinc-400 hover:text-yellow-500 transition-colors"><span className="sr-only">Notifications</span><AlertCircle className="w-8 h-8" /></button>
               
               <div 
                 onClick={openProfileModal}
@@ -886,11 +1516,13 @@ const App = () => {
         </div>
       </header>
 
-      <main className="pb-20">
+      <main className="pb-20 relative">
         {view === 'dashboard' && <Dashboard projects={projects} onNewProject={() => setView('wizard')} onDeleteProject={handleDeleteProject} />}
         {view === 'wizard' && <ProjectWizard onCancel={() => setView('dashboard')} onSave={handleSaveProject} />}
         {view === 'cost-db' && <CostDatabase costs={costs} onAddCost={handleAddCost} onDeleteCost={handleDeleteCost} />}
         {view === 'vendors' && <VendorManager vendors={vendors} onAddVendor={handleAddVendor} onDeleteVendor={handleDeleteVendor} />}
+        
+        {isAIAssistantOpen && <AIAssistant onClose={() => setIsAIAssistantOpen(false)} />}
       </main>
 
       <Modal isOpen={isProfileModalOpen} onClose={() => setIsProfileModalOpen(false)} title="Edit Profile">
